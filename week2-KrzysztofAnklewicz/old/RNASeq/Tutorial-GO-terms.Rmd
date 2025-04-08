@@ -1,0 +1,405 @@
+---
+title: "Tutorial: Gene Ontology (GO) term enrichment analyses"
+output: html_document
+editor_options: 
+  markdown: 
+    wrap: sentence
+---
+
+# General information about gene ontologies
+
+Gene ontologies (GO) are formal representation of description of the gene function.
+For instance, <GO:0009867> corresponds to "jasmonic acid signaling pathway" (<https://www.ebi.ac.uk/ols4/ontologies/go/classes/http%253A%252F%252Fpurl.obolibrary.org%252Fobo%252FGO_0009867?lang=en>).
+Using GO terms, one can describe gene functions in a standardized manner, which facilitates downstream analyses.
+Assigning of GO terms can be done by hand or automatically and submitted to a database, which can be specific to the organism or research topic or applicable to a broader range of organisms.
+Take a look at the list of Ontologies available on the Ontology Search Service at EBI <https://www.ebi.ac.uk/ols4/ontologies>.
+
+Gene ontologies form one of the bases for the interpretation of RNAseq data.
+They allow finding general patterns in the RNAseq datasets.
+For instance, one can see if certain molecular processes are affected by the experimental factors.
+
+To get a better feel, where one can find information about GOs, go through the following steps and fill in the missing information below.
+1.
+Go to EMBL-EBI Ontology Lookup Service (OLS) <https://www.ebi.ac.uk/ols4/>.
+a.
+The service contains *\<272\>* different ontologies as of February 26, 2025 b.
+Three examples of ontologies are: *\<HP, EFO, NCIT\>* 2.
+Search for ontology ‘Alzheimer's Disease Ontology (ADO)’.
+Each term in this ontology has an ID.
+The stage ‘sudden onset of cognitive impairment’ has an ID *\<*ADO:0000067*\>*.
+This ID is useful when a researcher wants to submit a dataset for the same disease stage to a database and describe it such that other researchers can reuse, classify, and interpret the data.
+3.
+Search ‘Gene Ontology’.
+The three main categories in Gene Ontology (GO) are *\<*biological processes (BP), molecular functions (MF), and cellular components (CC)*\>*.
+Each gene can be described in GO terms in these three categories.
+4.
+To look at the GO terms in details, we go to Gene Ontology (GO) project [https://geneontology.org](#0){.uri style="font-size: 11pt;"}.
+Trees for GO terms from there are mirrored on the EMBL-EBI OLS service.
+5.
+Search for gene *‘Apolipoprotein E’* (APOE) and limit results to Homo sapiens 6.
+The APOE gene is associated with *\<occurs in, part of, has input\>* GO annotations.
+Three examples are *\<*[part of](http://purl.obolibrary.org/obo/BFO_0000050 "BFO:0000050 (go to the page for part of)") [positive regulation of dendritic spine development](http://amigo.geneontology.org/amigo/term/GO:0060999 "GO:0060999 (go to the page for positive regulation of dendritic spine development)"), [occurs in](http://purl.obolibrary.org/obo/BFO_0000066 "BFO:0000066 (go to the page for occurs in)") [cerebrospinal fluid](http://purl.obolibrary.org/obo/UBERON_0001359 "UBERON:0001359 (go to the page for cerebrospinal fluid)"), [occurs in](http://purl.obolibrary.org/obo/BFO_0000066 "BFO:0000066 (go to the page for occurs in)") [smooth muscle cell of the pulmonary artery](http://purl.obolibrary.org/obo/CL_0002591 "CL:0002591 (go to the page for smooth muscle cell of the pulmonary artery)")*\>*.
+
+In the document below, you will perform the GO term enrichment analysis for genes differentially regulated in the *Arabidopsis thaliana* RNAseq dataset from the paper Bjornson et al., 2021.
+For the assignment, you are asked to conduct a similar analysis for the another set of genes from the differential gene expression analysis (DGEA) of the same RNAseq dataset.
+
+In the tutorial below, we will first repeat DGEA to obtain a gene set of interest.
+Then, we will use this gene set for the GO term enrichment analysis.
+
+# DGEA in DESeq2
+
+## Loading input data: raw read counts, design matrix
+
+```{r input, echo=TRUE}
+# load the necessary libraries
+library("tidyverse")
+
+# read raw read counts and the design matrix
+raw_counts <- read_tsv("../data/BB-RNAseq-input-datasets/PRJEB25079_RawCounts_reformatted.tsv")
+design <- read_tsv("../data/BB-RNAseq-input-datasets/design-matrix.tsv")
+
+# reformat the read count table for DEseq2 so the gene names are not in the column but in row names
+raw_counts <- raw_counts %>% column_to_rownames(var = "GeneID")
+
+```
+
+## filtering the dataset, fitting the statistical model, and performing Wald's test
+
+```{r DGEA_DESeq2, echo=TRUE, message=FALSE, warning=FALSE}
+BiocManager::install("DESeq2")
+install.packages("BiocManager")
+library("DESeq2")
+
+### create a DESeq2 object
+# select samples for the analysis:
+keep_sample <- c("Col_mock_030", "Col_mock_0301", "Col_mock_0302", "Col_mock_0303", "Col_flg22_030", "Col_flg22_0301", "Col_flg22_0302", "Col_flg22_0303")
+
+# since the samples differ by only one parameter, we need to select only this parameter from the design table, otherwise DESeq2 does not work
+keep_factor <- c("Treatment")
+
+# reformat the design table for DESeq2 (move sample names to row names) and subset the design table to contain only the experimental factors of interest
+DESeq2_design <- design %>% column_to_rownames(var = "SampleID")
+DESeq2_design <- DESeq2_design[keep_sample, ] %>% select(all_of(keep_factor))
+
+
+print("create DESeq2 object")
+dds <- DESeqDataSetFromMatrix(countData = raw_counts[, keep_sample],
+                              colData = DESeq2_design,
+                              design = ~ Treatment) # add Timepoint if you include samples from different timepoints too
+
+
+# check the imported object
+dim(dds) # dimensions
+head(rownames(dds)) # gene names
+head(colnames(dds)) # sample names
+
+# plot the distribution of read counts across the entire dataset
+hist(log2(counts(dds)), main = "Distribution of the read counts across the dataset before removing low expressed genes", xlab = "log2 raw read count")
+
+# discard genes that are not or low expressed; keep those that are expressed at least in two samples in the dataset
+print(paste("Total number of genes:", nrow(dds)))
+keep <- rowSums(counts(dds) >= 5) >= 3 #genes with more than 5 counts in more than 2 samples
+dds <- dds[keep,]
+print(paste("Number of genes after filtering:", nrow(dds)))
+
+# plot the distribution of read counts across the entire dataset
+hist(log2(counts(dds)), main = "Distribution of the read counts across the dataset after removing low expressed genes", xlab = "log2 raw read count")
+
+### data transformation for PCA
+print("transform counts using the variance stabilizing transformation; one could also perform PCA on cpm-normalized data but the variance-stabilizing transformation is preferred")
+transformed_counts <- vst(dds, blind = FALSE)
+
+print("making PCA plots, data saved into a file in the working directory")
+# PCA with color based on different parameters using argument "intgroup"
+for (exp_factor in c("Treatment")){
+  pcaData <- plotPCA(transformed_counts, intgroup = exp_factor, ntop = nrow(transformed_counts), returnData = TRUE)
+  percentVar <- round(100 * attr(pcaData, "percentVar"))
+  g <- ggplot(pcaData, aes(x = PC1, y = PC2, color = factor(group)))
+  g <- g + geom_point(size = 4, alpha = 1) +
+    xlab(paste0("PC1: ", percentVar[1], "% variance")) +
+    ylab(paste0("PC2: ", percentVar[2], "% variance")) +
+    theme_classic()
+}
+
+# display the latest PCA plot in the RMarkdown report. This and other PCA plots are saved into a file.
+g
+
+### fit the model for the differential gene expression (DGE) analysis
+dds <- DESeq(dds, test = "Wald")
+
+### extract results of the DGE analysis
+res <- results(dds, contrast = c("Treatment", "flg22", "mock")) # base for the comparison at the end
+overview_res <- data.frame(GeneID = row.names(res), log2FoldChange = res$log2FoldChange, p_adj = res$padj)
+
+# thresholds
+padj_cutoff <- 0.05
+lfc_cutoff <- 1
+
+# calculate the number of DEGs
+count_up_deseq2 <- overview_res %>% filter(log2FoldChange >= lfc_cutoff & p_adj <= padj_cutoff) %>% nrow()
+count_down_deseq2 <- overview_res %>% filter(log2FoldChange <= -lfc_cutoff & p_adj <= padj_cutoff) %>% nrow()
+count_total_deseq2 <- overview_res %>% nrow()
+
+# make a volcano plot with DGEA results
+g <- ggplot(overview_res, aes(x = log2FoldChange, y = -log10(p_adj)))
+g + geom_point() +
+  geom_hline(yintercept=-log10(0.05), color = "red") + 
+  geom_vline(xintercept=1, color = "red") +
+  geom_vline(xintercept=-1, color = "red") +
+  # give title to the plot, change names of axes
+  labs(title = paste(count_total_deseq2, "genes tested,", count_up_deseq2, "up- and", count_down_deseq2,
+                     "downregulated; |LFC|>=1, p_adj <= 0.05"),
+       y = "-log10(p-value)", x = "log2 FC mock vs. flg22, 30 min") +
+  theme_classic()
+
+```
+
+## writing DGEA results into a file
+
+At the end of DGEA, let's write log2fc and p-value results of the DGEA for all genes into separate files, so we can use them in downstream analyses such as GO term enrichment analyses.
+
+```{r write_DGEA_results_in_files, echo=TRUE}
+# make directory in the working directory to write the results there
+dir.create("results-deseq2")
+
+# write deseq2 results
+write_tsv(overview_res, "./results-deseq2/summary_dgea_deseq2.tsv")
+
+```
+
+# GO and KEGG term enrichment analysis
+
+In research, several sources of the gene ontologies are used.
+One is from the database Gene Ontology (<https://geneontology.org>) and another is from Kyoto Encyclopedia of Genes and Genomes (KEGG; <https://www.genome.jp/kegg/>).
+In essence, the KEGG terms are also GO terms, however to avoid confusion we will use 'KEGG term' to describe GO coming from the KEGG database.
+
+We will use the package clusterProfiler to access the databases and perform the GO/KEGG term enrichment analyses (<https://www.nature.com/articles/s41596-024-01020-z>).
+Working with the Gene Ontology database requires that the gene IDs are converted to the ENTREZ format (<https://pmc.ncbi.nlm.nih.gov/articles/PMC1761442/>), while working with the KEGG database can often be done with the original species-specific gene IDs, i.e.
+AGI codes like AT3G48090 for *Arabidopsis thaliana*.
+
+The clusterProfiler package is hosted on Bioconductor and should be installed from their.
+In addition, you will be asked to install package "org.At.tair.db" with the Arabidopsis gene annotation for the clusterProfiler to search for GO terms.
+Please install other dependencies if prompted.
+
+In the script below, you will first select the sets of genes: up- and downregulated genes as the genesets of interest and all expressed genes as a universe or background.
+
+```{r Prep_for_GO_enrichment, echo=TRUE, message=FALSE, warning=FALSE}
+## Libraries
+BiocManager::install("clusterProfiler")
+BiocManager::install("org.At.tair.db")
+library("clusterProfiler") # to install the package run BiocManager::install("clusterProfiler") # Attention, in case of error for gene mapping, renew clusterProfiler package
+suppressPackageStartupMessages(library("org.At.tair.db")) # to install, run BiocManager::install("org.At.tair.db")
+
+BiocManager::install("biomaRt")
+library("biomaRt")  # use to remove cache bug
+install.packages("biomartr")
+library("biomartr") # to install the package run install.packages("biomartr")
+
+# load results of DGEA from a file; one could also use the dataframe from above
+overview_res <- read_tsv("./results-deseq2/summary_dgea_deseq2.tsv")
+
+# extract AGI IDs from the DGEA results
+# please note that we specify here that filter and select functions come from the dplyr library, otherwise R will take these functions from biomartr, which is an unfortunate behaviour.
+upregulated <- overview_res %>% dplyr::filter(log2FoldChange >= 1 & p_adj <= 0.05) %>% dplyr::select(GeneID) %>% pull()
+downregulated <- overview_res %>% dplyr::filter(log2FoldChange <= -1 & p_adj <= 0.05) %>% dplyr::select(GeneID) %>% pull()
+all_expressed <- overview_res %>% dplyr::select(GeneID) %>% pull()
+
+# GO but not KEGG term enrichment in clusterProfiler works with NCBI ENTREZ IDs rather than Arabidopsis gene IDs in our read count tables
+# We will find the matching ENTREZ IDs using the org.At.tair.db package that contains the Arabidopsis gene annotation
+# We perform the matching for all three gene sets: upregulated, downregulated, universe.
+upregulated_entrez <- unique(select(org.At.tair.db, keys = upregulated,
+                                    column = c('ENTREZID', 'SYMBOL'), keytype = 'TAIR')[,'ENTREZID']) # ignore returned 1:many mapping between keys and columns
+upregulated_entrez <- upregulated_entrez[!is.na(upregulated_entrez)]
+
+downregulated_entrez <- unique(select(org.At.tair.db, keys = downregulated,
+                                               column = c('ENTREZID', 'SYMBOL'), keytype = 'TAIR')[,'ENTREZID'])  # ignore returned 1:many mapping between keys and columns
+downregulated_entrez <- downregulated_entrez[!is.na(downregulated_entrez)]
+
+all_expressed_entrez <- unique(select(org.At.tair.db, keys = all_expressed,
+                                               column = c('ENTREZID', 'SYMBOL'), keytype = 'TAIR')[,'ENTREZID'])  # ignore returned 1:many mapping between keys and columns
+all_expressed_entrez <- all_expressed_entrez[!is.na(all_expressed_entrez)]
+
+```
+
+Let's perform the KEGG term enrichment analysis for the up- and downregulated genes.
+The KEGG term annotation information for each gene is fetched from the KEGG database.
+
+```{r KEGG, echo=TRUE, message=FALSE, warning=FALSE}
+### for upregulated genes ###
+# KEGG term enrichment analysis
+kegg_analysis <- enrichKEGG(gene = upregulated,
+                               universe = all_expressed,
+                               organism = "ath",
+                               keyType = "kegg",
+                               minGSSize = 10,
+                               maxGSSize = 500,
+                               pAdjustMethod = "BH",
+                               qvalueCutoff = 0.05,
+                               use_internal_data = FALSE)
+
+# plot results of the KEGG term enrichment analysis
+print("results of the KEGG term enrichment analysis for upregulated genes")
+dotplot(kegg_analysis,
+        color = "qvalue",
+        showCategory = 10,
+        size = "Count",
+        title = "KEGG term enrichment analysis for upregulated genes")
+
+### for downregulated genes ###
+# KEGG term enrichment analysis
+kegg_analysis <- enrichKEGG(gene = downregulated,
+                               universe = all_expressed,
+                               organism = "ath",
+                               keyType = "kegg",
+                               minGSSize = 10,
+                               maxGSSize = 500,
+                               pAdjustMethod = "BH",
+                               qvalueCutoff = 0.05,
+                               use_internal_data = FALSE)
+
+# plot results of the KEGG term enrichment analysis
+print("results of the KEGG term enrichment analysis for downregulated genes")
+dotplot(kegg_analysis,
+        color = "qvalue",
+        showCategory = 10,
+        size = "Count",
+        title = "KEGG term enrichment analysis for downregulated genes")
+```
+
+Below we run the GO term enrichment analysis for GO terms from the Gene Ontology database.
+Here we use the ENTREZ gene IDs.
+The GO term annotation information is fetched not the Gene Ontology database directly, but from the org.At.tair.db package.
+
+```{r OGA, echo=TRUE, message=FALSE, warning=FALSE}
+### for upregulated genes ###
+# GO term enrichment analysis 
+ora_analysis <- data.frame(enrichGO(gene = upregulated_entrez,
+                                    universe = all_expressed_entrez,
+                                    OrgDb = org.At.tair.db,  # contains the TAIR/Ensembl id to GO correspondence for A. thaliana
+                                    keyType = "ENTREZID",
+                                    ont = "BP",              # either "BP", "CC" or "MF",
+                                    pAdjustMethod = "BH",
+                                    qvalueCutoff = 0.05,
+                                    readable = TRUE,
+                                    pool = FALSE))
+
+# plot results of the GO term enrichment analysis
+print("results of the GO term enrichment analysis for upregulated genes")
+ggplot(ora_analysis, aes(x=Count, y=reorder(Description, p.adjust), fill=p.adjust)) +
+  theme_classic() +
+  geom_bar(stat='identity') +
+  scale_fill_gradient(low = "blue", high = "red") +
+  labs(y='', title = 'GO term enrichment analysis for upregulated genes')
+
+# Use the order function to sort the DataFrame by the "count" column in descending order to aid the data analysis
+ora_analysis_ordered <- ora_analysis[order(-ora_analysis$Count), ]
+
+# plot the top 15 enriched categories
+# use the head function to select the top 15 rows/terms
+ora_analysis_top15 <- head(ora_analysis_ordered, 15)
+
+print("results of the GO term enrichment analysis for upregulated genes, only top 15 terms are shown")
+ggplot(ora_analysis_top15, aes(x=Count, y=reorder(Description, p.adjust), fill=p.adjust)) +
+  theme_classic() +
+  geom_bar(stat='identity') +
+  scale_fill_gradient(low = "blue", high = "red") +
+  labs(y='', title = 'top 15 enriched GO terms for upregulated genes')
+
+# write results of the GO analysis into a file; results of the KEGG might be saved too if needed
+write_tsv(ora_analysis_ordered,
+            "./results-go/GO-results-upregulated.tsv")
+
+### for downregulated genes ###
+# GO term enrichment analysis 
+ora_analysis <- data.frame(enrichGO(gene = downregulated_entrez,
+                                      universe = all_expressed_entrez, 
+                                      OrgDb = org.At.tair.db,  # contains the TAIR/Ensembl id to GO correspondence for A. thaliana
+                                      keyType = "ENTREZID",
+                                      ont = "BP",              # either "BP", "CC" or "MF",
+                                      pAdjustMethod = "BH",
+                                      qvalueCutoff = 0.05,
+                                      readable = TRUE, 
+                                      pool = FALSE))
+
+# plot results of the GO term enrichment analysis
+print("results of the GO term enrichment analysis for downregulated genes")
+ggplot(ora_analysis, aes(x=Count, y=reorder(Description, p.adjust), fill=p.adjust)) +
+  theme_classic() +
+  geom_bar(stat='identity') +
+  scale_fill_gradient(low = "blue", high = "red") +
+  labs(y='', title = 'GO term enrichment analysis for downregulated genes')
+
+# Use the order function to sort the DataFrame by the "count" column in descending order to aid the data analysis
+ora_analysis_ordered <- ora_analysis[order(-ora_analysis$Count), ]
+
+# plot the top 15 enriched categories
+# use the head function to select the top 15 rows/terms
+ora_analysis_top15 <- head(ora_analysis_ordered, 15)
+
+print("results of the GO term enrichment analysis for downregulated genes, only top 15 terms are shown")
+ggplot(ora_analysis_top15, aes(x=Count, y=reorder(Description, p.adjust), fill=p.adjust)) +
+  theme_classic() +
+  geom_bar(stat='identity') +
+  scale_fill_gradient(low = "blue", high = "red") +
+  labs(y='', title = 'top 15 enriched GO terms for downregulated genes')
+
+# write results of the GO analysis into a file; results of the KEGG might be saved too if needed
+write_tsv(ora_analysis_ordered,
+            "./results-go/GO-results-downregulated.tsv")
+```
+
+Please note the difference in results with the GO and KEGG terms.
+Check one of the questions in your assignment to reflect on.
+
+# Testing for the significance of overlap, example 1
+
+Once genesets of interest were extracted from the RNAseq dataset, we can test if they overlap genesets from other studies, e.g. lists of targets of particular transcription factors (TFs).
+In the example below, we will check the flg22-induced genes selected above overlap statistically significantly with targets of WRKY TFs from the study Birkenbihl et al., 2018 Plant J 2018 Nov;96(3):487-502; <https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE109149>).
+We will first visualize the overlap, then build the contigency table and finally perform the Fisher's exact test to assess the significance of the overlap.
+
+```{r WRKY_overlap_upset, echo=TRUE, message=FALSE, warning=FALSE}
+## read input data for WRKY targets
+targets <- read_tsv("../data/BB-RNAseq-input-datasets/WRKY-targets-Birkenbihl-et-al-2018.tsv")
+
+# check how the data looks like
+head(targets)
+
+## visualizing the overlap
+print("visualize the overlap using the UpSetR functions")
+# load the library
+install.packages("UpSetR")
+library(UpSetR)
+# define the sets of genes for comparison and combine them in one list
+sets <-list(up_flg22 = upregulated, wrky_target = targets$GeneID)
+
+# the list is then used as an input for the upset function
+upset(fromList(sets), order.by = "freq")
+
+```
+
+We see that the flg22-induced genes (2,115 in total) have 662 that are also the WRKY TF targets.
+At the same time, 1,453 genes are unique to the flg22-induced genes, and 1,268 genes are unique to the WRKY target set.
+Now let's construct the contingency table.
+For that, we will need to know the total number of genes in Arabidopsis genome.
+This information can be found on NCBI or other dedicated resources - <https://www.ncbi.nlm.nih.gov/datasets/genome/GCF_000001735.4/>.
+The latest TAIR10.1 version of the Arabidopsis genome contains 27,562 protein-coding genes.
+Based on these numbers, we can make the contingency table.
+- Overlap - 662 - flg22 induced but not WRKY targets - 1453 - WRKY targets but not flg22 induced - 1268 - not flg22 induced and not WRKY targets - 27,562-2115-1930+662
+
+```{r WRKY_overlap_Fisher, echo=TRUE, message=FALSE, warning=FALSE}
+# construct and print the contingency table
+cont_table <- data.frame(among_flg22_up = c(662, 1453), not_among_flg22_up = c(1268, 24179),
+                         row.names = c("among_wrky_targets", "not_among_wrky_targets"))
+
+print(cont_table)
+
+# perform the enrichment test
+fisher.test(cont_table)
+
+```
+
+Results of the Fisher's exact test suggest 8.7 times enrichment of the WRKY targets among the flg22-induced genes (p-value \< 2.2e-16) suggesting that WRKY TFs play a role in flg22-induced transcriptional responses.
+
+One can apply similar logic to test for overlap between the genesets.
+
+Now try to use the obtained knowledge and skills in your assignment.

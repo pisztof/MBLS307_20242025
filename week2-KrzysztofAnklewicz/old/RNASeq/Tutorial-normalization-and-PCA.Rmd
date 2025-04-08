@@ -1,0 +1,178 @@
+---
+title: 'RNAseq dataset Bjornson et al., 2021: read count normalization and PCA'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Background
+
+This document describes some steps in the analysis of RNAseq data published as a part of the study Bjornson et al., 2021 (<https://doi.org/10.1038/s41477-021-00874-5>). These steps include inference about the sample quality based on the read counts, their normalization, and finding main factors in the experiment using the Principle Component Analysis (PCA).
+
+# Read input read count data and the design matrix
+
+The raw read count data were deposited in ENA/ArrayExpress database <https://www.ebi.ac.uk/biostudies/arrayexpress/studies/E-MTAB-9694> upon publication of the study (see section "Data availability" in the paper). The downloaded file was reformatted to facilitate its analysis during the practicals: we added a name to the first column (GeneID) and derived the design matrix that can be used to interpret results.
+
+```{r input, echo=TRUE}
+# load the necessary libraries
+library("tidyverse")
+
+# read raw read counts and the design matrix
+raw_counts <- read_tsv("../data/BB-RNAseq-input-datasets/PRJEB25079_RawCounts_reformatted.tsv")
+design <- read_tsv("../data/BB-RNAseq-input-datasets/design-matrix.tsv")
+
+```
+
+# Initial exploration of the read count table
+
+The read count table contains 319 samples (one column per sample), and the first column has the gene names. The sample IDs are in the column names. In total, the expression of 26,397 genes was evaluated in this RNAseq experiment (\# of rows).
+
+```{r initial_count_exploration1, echo=TRUE}
+# show top rows to see the overall structure of the read count table
+print("showing the top rows in the read count table")
+head(raw_counts)
+
+# check the total number of samples
+print(paste("the total number of samples is", ncol(raw_counts)-1))
+
+# check the total number of genes
+print(paste("the total number of genes is", nrow(raw_counts)))
+
+```
+
+To find out how many reads were assigned to each sample, we calculate the sum of read counts per column (sample). The obtained values are plotted as a histogram in million of reads. For convenience, the first column is moved to the row names. This rearrangement will simplify working with several functions and packages during the analysis.
+
+The samples have different total number of reads. Try to change the code below to find samples with the lowest and the highest number of reads. *Hint: use the functions min() and max()*.
+
+```{r initial_count_exploration2, echo=TRUE}
+# move the first column to rownames
+raw_counts <- raw_counts %>% column_to_rownames(var = "GeneID")
+
+# calculate number of reads per sample
+total_reads_per_sample <- colSums(raw_counts)
+
+# make a plot
+hist(total_reads_per_sample/10^6,
+     main = "Distribution of the total read count across the samples",
+     xlab = "Number of reads, M",
+     ylab = "Number of samples")
+
+```
+
+Let's check whether there are differences in the total number of reads depending on the sample. For that, we will link the calculated total number of reads to the sample annotation in the design matrix loaded earlier.
+
+```{r initial_count_exploration3, echo=TRUE}
+# link sample name and the total number of reads
+total_read_count <- tibble(SampleID = colnames(raw_counts),
+                               Total_count = total_reads_per_sample)
+
+total_read_count <- full_join(total_read_count, design, by = "SampleID")
+
+# check if there is bias in the total read count for one of experimental factors; we will use the ggplot2 library to visualize the patterns
+library("ggplot2")
+g <- ggplot(total_read_count, aes(x = Treatment, y = Total_count/10^6))
+g + geom_boxplot() +
+  geom_jitter(aes(color = as.character(Replicate))) +
+  facet_wrap(~Genotype) +
+  geom_hline(yintercept = mean(total_read_count$Total_count/10^6), linetype = "dashed", color = "red", linewidth = 0.5) +
+  theme_bw() +
+  labs(x = NULL,
+       y = "# raw reads, M") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+There is a tendency for samples from the replicate 4 to have lower number of reads in the experiment. Also, the Col-0 samples tend to have higher than average total number of samples. Thus, it is important to normalize the number of reads across samples in the downstream analyses.
+
+# Normalization of the read counts across samples
+
+What kind of normalization do we need to use? The most basic one is the library size normalization, where the number of raw reads is recalculated to ensure that the total read count is 1 million. The individual counts are then called *counts or read per million*.
+
+```{r cpm-normalization, echo=TRUE}
+# the total library size per sample was calculated earlier and stored in the vector 'total_reads_per_sample'
+# perform the cpm normalization
+cpm_counts <- t(t(raw_counts) / total_reads_per_sample * 1e6)
+
+# decimals are rounded to 1 or 2 to reduce the size of the object (digits after two decimals are not meaningful for the analyses)
+cpm_counts <- round(cpm_counts, 2)
+
+# double-check that the normalization went well
+print(paste("mean sample size after the cpm normalization is",
+            round(mean(colSums(cpm_counts)), 0),
+            "and the standard deviation is",
+            round(sd(colSums(cpm_counts)), 0)))
+```
+
+Although the cpm normalization helps to account for differences in the library size, it is not ideal for many statistical analyses. The reason is that the samples might have bias towards low or high expressed genes. For instance, compare the distribution of the log2 cpm values for two replicates of the same treatment. Even though the total number of reads is the same (1,000,000), the distribution is different. There are ways to account for this difference in the RNA species composition but it is outside of the scope of this tutorial and the course.
+
+```{r expression_bias_cpm, echo=TRUE}
+# 
+hist(log2(cpm_counts[,"Col_flg22_180"]), main = "distribution of cpm values in Col-0 flg22, replicate 1", xlab = "log2(cpm)", xlim = c(-5, 15))
+hist(log2(cpm_counts[,"Col_flg22_1801"]), main = "distribution of cpm values in Col-0 flg22, replicate 2", xlab = "log2(cpm)", xlim = c(-5, 15))
+
+```
+
+# Principle component analysis
+
+At the end of this tutorial, we will try to find the major sources of variation in the gene expression dataset. For that, we will use the package DESeq2 that you need to install from BioConductor <https://bioconductor.org/packages/release/bioc/html/DESeq2.html>.
+
+In the DESeq2 workflow, one first creates a DESeq2 object that contains raw read counts and the design information. Then, the raw read counts are transformed using the variance stabilizing method to reduce the level of variation in the low expressed genes across the dataset. These transformed read counts are used for PCA. Information from the design table in the DESeq2 object is used to give aesthetics to samples on the PCA plot. The PCA plot is saved into a separate file and shown below. One can see a clear separation of the flg22 and mock samples on PC1, which explains a significant portion of variation in the dataset. One could conclude that the experiment worked as expected for these control samples.
+
+One could try to make PCA for the entire dataset but the plot with 319 samples and multiple experimental factors is difficult to view. For the purpose of this tutorial, we won't make such a plot for the whole dataset. However, feel free to do this on your own and let us know if you have questions.
+
+```{r PCA, echo=TRUE}
+# to install DESeq2, run the following commands:
+#if (!require("BiocManager", quietly = TRUE))
+#    install.packages("BiocManager")
+
+#BiocManager::install("DESeq2")
+library("DESeq2")
+
+### create a DESeq2 object
+# select samples for the analysis:
+keep_sample <- c("Col_mock_030", "Col_mock_0301", "Col_mock_0302", "Col_mock_0303", "Col_flg22_030", "Col_flg22_0301", "Col_flg22_0302", "Col_flg22_0303")
+
+# since the samples differ by only one parameter, we need to select only this parameter from the design table, otherwise DESeq2 does not work
+keep_factor <- c("Treatment")
+
+# reformat the subset design table 
+DESeq2_design <- design %>% column_to_rownames(var = "SampleID")
+DESeq2_design <- DESeq2_design[keep_sample, ] %>% select(all_of(keep_factor))
+
+print("create DESeq2 object")
+dds <- DESeqDataSetFromMatrix(countData = raw_counts[, keep_sample],
+                              colData = DESeq2_design,
+                              design = ~ Treatment) # add Timepoint if you include samples from different timepoints too
+
+
+# check the imported object
+dim(dds) # dimensions
+head(rownames(dds)) # gene names
+head(colnames(dds)) # sample names
+
+### data transformation for PCA
+print("transform counts using the variance stabilizing transformation; one could also perform PCA on cpm-normalized data but the above transformation is preferred")
+transformed_counts <- vst(dds, blind = FALSE)
+transformed_counts
+
+print("making PCA plots, data saved into a file in the working directory")
+# PCA with color based on different parameters using argument "intgroup"
+for (exp_factor in c("Treatment")){
+  pcaData <- plotPCA(transformed_counts, intgroup = c("Treatment", "Timepoint"), 
+                     ntop = nrow(transformed_counts), returnData = TRUE)
+  percentVar <- round(100 * attr(pcaData, "percentVar"))
+  g <- ggplot(pcaData, aes(x = PC1, y = PC2, color = group))
+  g <- g + geom_point(size = 4, alpha = 1) +
+    xlab(paste0("PC1: ", percentVar[1], "% variance")) +
+    ylab(paste0("PC2: ", percentVar[2], "% variance")) +
+    theme_classic()
+  ggsave(paste0("PCA-", exp_factor, ".pdf"), g, width = 5, height = 5, dpi = 150)
+}
+
+# display the latest PCA plot in the RMarkdown report. This and other PCA plots are saved into a file.
+g
+
+
+```
