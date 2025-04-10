@@ -1,8 +1,19 @@
+### Dollarstore Boxplotter 1.1.0
+### Author: Krzysztof M. Anklewicz (4357620)
+### Last modified: 09/04/2025
+### This script uses the datasets from Ibáñez-Molero S., Pruijs J.T.M., Atmopawiro A., et al.(2024) to generate 
+### boxplots of significantly up- and downregulated genes. Please note that I've taken the liberty to replace all 
+### NA values with blanks in Excel. 
+### Input: either of the two Excel spreadsheets provided by the authors, with "NA" values replaced by blanks.
+### Output: boxplots of the top up- and downregulated proteins/phosphosites in any of the three exp. conditions.
+### Libraries: tidyverse, ggplot2, readxl.
+
+##################### SECTION 1: importing libraries and data #####################
+
 library(tidyverse)
 library(ggplot2)
 library(readxl)
 
-# please note that I've taken the liberty to replace all NA values with blanks in Excel. This could have been handled in the code, had I had the patience.
 data_tumour <- read_xlsx("proteomicsdata.xlsx", sheet="Tumor_Proteome_SISII_Log2Abunda")
 data_tcell <- read_xlsx("proteomicsdata.xlsx", sheet="Tcell_Proteome_SISII_Log2Abund")
 data_newsynth <- read_xlsx("proteomicsdata.xlsx", sheet="NewSynth_Proteome_SISII_Log2Abu")
@@ -10,6 +21,9 @@ data_newsynth <- read_xlsx("proteomicsdata.xlsx", sheet="NewSynth_Proteome_SISII
 head(data_tumour) # inspect the dataframe
 
 # the following code graphs the plot for the tumour dataframe. Graphing all three at once can be done by wrapping all this in a for loop.
+
+########################### SECTION 2: table acrobatics ########################### 
+
 long_df <- data_tumour %>% # pivot to a longer dataframe to compare intensities per sample per time point
   pivot_longer(
     cols = !c(Protein.ID, Protein.name, Gene.name, SILAC.label), 
@@ -27,7 +41,9 @@ log2f_df <- long_df %>%    # take the intensities from each replicate
     values_from = log2_intensity) %>% 
   mutate(log2f = T6h - T0) # from log laws, log(a)-log(b) = log(a/b)
   
-head(log2f_df) # the table has 4 columns: Protein.ID, cell_line, T0, T6h
+head(log2f_df) 
+
+#################### SECTION 3: data filtering and manipulation ####################
 
 log2f_df <- log2f_df %>%  # filter the dataframe to only include proteins with at least 2 data points
   filter(!is.na(log2f)) %>%
@@ -35,9 +51,12 @@ log2f_df <- log2f_df %>%  # filter the dataframe to only include proteins with a
   filter(n() >= 2) %>%
   ungroup()
 
-high_fc <- log2f_df %>% # takes the average of all data points for any protein from any cell line
+high_fc <- log2f_df %>%  # take the average of all data points for any protein from any cell line
   group_by(across(all_of("Protein.ID"))) %>%
-  summarize(mean_fc = mean(log2f, na.rm = TRUE), .groups = "drop") # average of log values is valid, gives log2 of the geometric mean
+  summarize(mean_fc = mean(log2f, na.rm = TRUE), 
+            .groups = "drop") # average of log values is valid, gives log2 of the geometric mean
+
+#################### SECTION 4: limiting the number of boxes #######################
 
 top_n <- 10  # choose how many top hits you want to show per plot
 
@@ -59,7 +78,8 @@ down_data <- log2f_df %>%
   filter(!!sym("Protein.ID") %in% downregulated) %>%
   mutate(direction = "Downregulated")
 
-# plotting the data
+########################### SECTION 5: plotting the data ##########################
+
 plot_data <- bind_rows(up_data, down_data)
 
 ggplot(plot_data, aes(x = !!sym("Protein.ID"), y = log2f, fill = direction)) +
@@ -73,9 +93,9 @@ ggplot(plot_data, aes(x = !!sym("Protein.ID"), y = log2f, fill = direction)) +
     subtitle = "Tumour Cells",
     x = "Protein ID",
     y = "Log2 Fold Change (T6h/T0)",
-    fill = "Direction"
-  ) +
+    fill = "Direction") +
   theme(
     axis.text.x = element_text(angle = 45, hjust = 1), # rotate names to avoid overcrowding
-    strip.text = element_text(size = 14, face = "bold")
-  )
+    strip.text = element_text(size = 14, face = "bold"))
+
+ggsave("boxplot tumour cells.png")
